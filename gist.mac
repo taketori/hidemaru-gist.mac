@@ -1,0 +1,198 @@
+$mn = "秀丸でgist - ";
+// gist.mac
+// copyright (C) taketori <taketori at x10d.jp>
+// ライセンスは、いわゆる「修正BSD」です。
+// 動作環境は、秀丸(Ver.8.00以上)・COMの読み出し・実行、編集中ファイルの読み出し、COMからGithubへの接続、Gitの実行ができる 環境。
+
+$GIST_URL = "http://gist.github.com/";
+$GIST_URL_HTTPS = "https://gist.github.com/";
+$GIT_DIR = "F:\\cygwin\\bin\\";
+
+MAIN:
+
+	$$argv = "";
+	if(getarg(0) != "")	$$argv = getarg(0);
+	else{
+		$$argv = input($mn + "\nInput [g] to gist, [p] for private, GIST_ID or URL to get it, [a] to get all of mine or [h] to help.");
+	}
+
+	if($$argv == ""){
+		endmacro;
+	}else if($$argv == "h"){
+		call disp_help;
+	}else if($$argv == "a"){
+		call get_mine;
+	}else if($$argv == "g" || $$argv == "p"){
+		call write ($$argv == "p");
+	}else{
+		call read $$argv;
+	}
+
+	if($$return != "")	call copy_cb $$return;
+	title -1;
+
+endmacro;
+
+read:
+//arg: $gist_id
+//ARG: $GIST_URL, $GIST_URL_HTTPS
+
+	if(strstr($$1, $GIST_URL) != -1 || strstr($$1, $GIST_URL_HTTPS) != -1){
+		call open_http "GET", $$1 + ".txt";
+	}else{
+		call open_http "GET", $GIST_URL + $$1 + ".txt";
+	}
+	if(##return == 0)	return;
+
+return member(##return, "ResponseText");
+
+write:
+// Gistに書き込む。
+//arg: #private_gist(0=not, 1=private)
+//ARG: $GIST_URL
+
+	call data "", "", ##1;
+	if($$return == "")	return;
+	call open_http "POST", $GIST_URL + "gists?" + $$return;
+	if(##return == 0)	return;
+
+return getpropstr(##return, "Option", 1);
+
+get_mine:
+// 自分のgistの一覧を取得する。
+//arg: --
+//ARG: $GIST_URL
+
+	// データ取得
+	call auth;
+	call open_http "GET", $GIST_URL + "mine?" + $$return;
+	if(!##return)	return;
+	// 自分のgist一覧がとれているかチェック
+	if(strstr(getpropstr(##return, "Option", 1), $GIST_URL + "mine") == -1){
+		title $mn + "gistへのログインに失敗しました。";
+		return;
+	}
+
+	// HTMLを解析する。
+	##html = createobject("htmlfile");
+	if(!##html)	return;
+	title $mn + "HTMLの解析中。";
+	callmethod ##html, "write", getpropstr(##return, "ResponseText");
+
+	// DIVタグをすべて取得し、id=files(gist一覧の先頭)までループ。
+	##divs = member(member(##html, "body"), "GetElementsByTagName", "div");
+	title $mn + "gistの一覧を取得しています。";
+	##div = getcollection(##divs);
+	while(##div && getpropstr(##div, "Id") != "files"){		//NOTE: ループ抜けるときは##divはfilesを指している。
+		##div = getcollection(##divs);
+	}
+	##gists = member(##div, "Children");
+
+	// gistごとにそのデータを取得する。
+	##gist = getcollection(##gists);
+	while(##gist){
+		##childs = member(##gist, "Children");
+		$$ret = $$ret + member(getcollection(##childs), "outerText") + "\n";		//meta clearfixのデータ
+		// 各gistの実際のコードを先頭3行だけ取得。というかgist一覧ページから取得できるのは3行だけ。
+		##data = member(getcollection(##childs)/*data syntax*/, "GetElementsByTagName", "div");
+		##_ = getcollection(##data, 1/*スキップ*/, 1);
+		$$ret = $$ret + member(getcollection(##data), "outerText")/*1行目*/ + "\n"
+					        + member(getcollection(##data), "outerText")/*2行目*/ + "\n"
+					        + member(getcollection(##data), "outerText")/*3行目*/ + "\n";
+		$$ret = $$ret + "\n";
+		##data = getcollection(##childs, 3);
+		##gist = getcollection(##gists);
+	}
+	##gist = getcollection(##gists, 3);
+	##div = getcollection(##divs, 3);
+
+return $$ret;
+
+disp_help:
+//ARG: $mn
+
+	message $mn + "\ngかpかhかaかGistの番号を入力するだけ。\n取得した内容はクリップボードに入ってます。\n範囲選択してからgかpで、その範囲だけをGistにします。";
+
+return;
+
+copy_cb:
+//arg: $text
+//ARG: $mn
+
+	setclipboard $$1;
+	title $mn + "クリップボードにコピーしました。";
+
+return;
+
+data:
+// POSTするときに渡す文字列を連結する。
+//arg: $name, $ext, #private_gist
+
+	$$ret = leftstr("action_button=private&", ##3 * 23/*第1引数の文字数*/)
+				 + "file_name[gistfile1]=" + $$1 + "&file_ext[gistfile1]=" + $$2 + "&file_contents[gistfile1]=";
+
+	// テキストの取得とエンコード
+	##objSCtrl = createobject("ScriptControl");
+	if(!##objSCtrl)	return;
+	setpropstr ##objSCtrl, "Language", "JScript";
+	if(selecting){
+		$$ret = $$ret + callmethod_returnstr(##objSCtrl, "Run", "encodeURIComponent", gettext(seltopx, seltopy, selendx, selendy));
+	}else{
+		gofileend;
+		$$ret = $$ret + callmethod_returnstr(##objSCtrl, "Run", "encodeURIComponent", gettext(0, 0, x, y));
+		prevpos;
+	}
+	releaseobject ##objSCtrl;
+
+	call auth;
+	if($$return == "")	return;
+
+return $$ret + "&" + $$return;
+
+auth:
+// Githubの認証に必要な情報(ユーザ名とトークン)を取得する
+//ARG: $mn, $GIT_DIR
+
+	title $mn + "Gitの設定から、Githubのユーザ名とトークンを取得しています。";
+	##objShell = createobject("WScript.Shell");
+	if(!##objShell)	return;
+
+	// ユーザ名を取得する。
+	##objExec = callmethod_returnobj(##objShell, "Exec", $GIT_DIR + "git.exe config --global github.user");
+	if(!##objExec)	return;
+	while(getpropnum(##objExec, "Status") == 0){
+		sleep 10;
+	}
+	$$ret = member(member(##objExec, "StdOut"), "ReadLine");
+	if($$ret == "")	return;
+
+	// ユーザ名を取得できたら、トークンを取得する。
+	##objExec = callmethod_returnobj(##objShell, "Exec", $GIT_DIR + "git.exe config --global github.token");
+	if(!##objExec)	return;
+	while(getpropnum(##objExec, "Status") == 0){
+		sleep 10;
+	}
+	$$ret = "login=" + $$ret + "&token=" + member(member(##objExec, "StdOut"), "ReadLine");
+
+	releaseobject ##objShell;
+
+return $$ret;
+
+open_http:
+// WinHTTP.HTTPRequestのopenメソッドを呼び出す。
+// リダイレクトするので、XMLHTTPではstatus系メソッドが適切な値を返さない。
+//arg: $1:接続方法(POST/GET), $2:URL, $3:APIとなる文字列およびその引数
+//ARG: $mn
+//ret: 0=何かエラー。0以外=#XMLHTTPで取得したオブジェクトの番号。
+
+	title $mn + $$1 + "のために接続 " + $$2;
+	##objHttp = createobject("WinHttp.WinHttpRequest.5.1");
+	if(!##objHttp)	##objHttp = createobject("WinHttp.WinHttpRequest");
+	if(!##objHttp)	return;
+
+	callmethod ##objHttp, "Open", $$1, $$2, 0;
+	setpropstr ##objHttp, "SetRequestHeader", "Content-Type", "application/x-www-form-urlencoded";
+	callmethod ##objHttp, "Send";
+	title $mn + "WinHttp : " + getpropstr(##objHttp, "StatusText");
+
+return ##objHttp * (getpropnum(##objHttp, "Status") == 200);
